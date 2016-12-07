@@ -31,7 +31,7 @@ void prepare_new_ALL_report(uint8 get_all);
 
 int8 ptx_fw_ver[4];
 
-uint8 bindFailFlag;
+uint8 failFlag;
 
 
 

@@ -207,8 +207,6 @@ int prepare_data_to_be_sent_to_net(unsigned char *buffer, int end, int max_paylo
 
 #ifdef TCP_CLIENT_MODE
 
-uint8 bindFailFlag = 1;
-
 void tcp_client_write_to_net(int fd);
 
 
@@ -222,7 +220,8 @@ void tcp_ip_process(void *pvParameters)		// Client  Client  Client  Client  Clie
 	int length;
 	struct sockaddr_in client_addr;  	// charles222 added /* client's address */
     int addr_len = sizeof(struct sockaddr_in); 	// charles222 added
-	int listenfd;
+    uint8 failFlag = 1;
+	int sockfd;
 	struct sockaddr_in server_addr; 	/* address of Server, remote or itself */
 	my_event_t uart_event;
 	portBASE_TYPE xHigherPriorityTaskWoken = pdFALSE;  // charles222
@@ -244,41 +243,41 @@ void tcp_ip_process(void *pvParameters)		// Client  Client  Client  Client  Clie
 		if(timer_count_for_socket_retry >= SOCKET_RETRY_THRESHOLD){
 			timer_count_for_socket_retry = 0;
 			// if socket failed, below socket process will be retried per TIME_UP_FOR_SOCKET_S
-			if(bindFailFlag == 1){	//do{
+			if(failFlag == 1){	//do{
 
-				if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) < 0){	// *** SOCK_STREAM
+				if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0){	// *** SOCK_STREAM
 					if(debug_level_release) printf("\n  TCP Client socket Error \n");
-					bindFailFlag = 1;
+					failFlag = 1;
 				}else{
-					if(debug_level_release) printf("\n  TCP Client socket() OK. fd is %d  \n", listenfd);	
+					if(debug_level_release) printf("\n  TCP Client socket() OK. fd is %d  \n", sockfd);	
 					// will fd increase in the while loop ?  so need to close it when fail.
-					if(connect(listenfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0){
+					if(connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0){
 						if(debug_level_release) printf("\n  connect error, will retry %d seconds later... \n", SOCKET_RETRY_THRESHOLD);
-						close(listenfd);
-						bindFailFlag = 1;
+						close(sockfd);
+						failFlag = 1;
 						//sleep(10);	// second
 						//continue;
 					}else{
 						if(debug_level_release) printf("\n  This Client connects to Server OK - IP: %s  port: %d \n", inet_ntoa(server_addr.sin_addr), htons(server_addr.sin_port)); //argv[1], argv[2]);
 						
-						bindFailFlag = 0;	// ***************  OK
+						failFlag = 0;	// ***************  OK
 					}
 				}
 			}
 		}
-		if(bindFailFlag == 1){
+		if(failFlag == 1){
 			vTaskDelay(1000 /*MY_DELAY_MS*/ / portTICK_RATE_MS);
 			continue;
 		}
 
 		
 		FD_ZERO(&readfds);
-		FD_SET(listenfd, &readfds);
+		FD_SET(sockfd, &readfds);
 		
 		FD_ZERO(&writefds);		// has the FD_CLR effect
 
 		if(u2n_end != u2n_start){		// save some power, otherwise CPU will keep running
-			FD_SET(listenfd, &writefds);
+			FD_SET(sockfd, &writefds);
 	  	}
 	
 
@@ -289,7 +288,7 @@ void tcp_ip_process(void *pvParameters)		// Client  Client  Client  Client  Clie
 
 
 		//**********************************************************************************************
-		result = select( listenfd + 1 /*FD_SETSIZE*/, &readfds, &writefds, 0, timeout );
+		result = select( sockfd + 1 /*FD_SETSIZE*/, &readfds, &writefds, 0, timeout );
 		//uint8 station_status = wifi_station_get_connect_status();  // STATION_IDLE(0), STATION_CONNECTING(1), STATION_GOT_IP (5)
 		//if(debug_level_ON) printf("[coap] select_() result:%d, sta_status:%d\n", result, station_status);
 		//if(debug_level_ON) printf("[coap] select_() ticks:%u, rtc:%u\n", xTaskGetTickCount(), system_get_rtc_time());
@@ -302,15 +301,15 @@ void tcp_ip_process(void *pvParameters)		// Client  Client  Client  Client  Clie
 			
 		} else if ( result > 0 ) {	/* read from socket */
 		
-		  	if ( FD_ISSET(listenfd, &readfds ) ) {		// read **********
+		  	if ( FD_ISSET(sockfd, &readfds ) ) {		// read **********
 
-				length = recvfrom(listenfd, NetTempBuffer, sizeof(NetTempBuffer), 0, (struct sockaddr *)&client_addr, (socklen_t*)&addr_len);
+				length = recvfrom(sockfd, NetTempBuffer, sizeof(NetTempBuffer), 0, (struct sockaddr *)&client_addr, (socklen_t*)&addr_len);
 
 				if(debug_level_release) printf("\n from Net  %d B ", length);
 				
 				if(length <= 0){
-					bindFailFlag = 1;	// **************************  to reconnect to Server
-					close(listenfd);
+					failFlag = 1;	// **************************  to reconnect to Server
+					close(sockfd);
 					continue;
 				}
 				
@@ -322,8 +321,8 @@ void tcp_ip_process(void *pvParameters)		// Client  Client  Client  Client  Clie
 		  	}
 
 
-			if (FD_ISSET(listenfd, &writefds)) {		// write **********
-				tcp_client_write_to_net(listenfd);
+			if (FD_ISSET(sockfd, &writefds)) {		// write **********
+				tcp_client_write_to_net(sockfd);
 			}
 			
 		} else {		// == 0	/* timeout */ 
@@ -339,7 +338,7 @@ void tcp_ip_process(void *pvParameters)		// Client  Client  Client  Client  Clie
 		  	//while(u2n_start != local_end){	// if net connection is down, may run here forever
 		  	if(u2n_start != local_end){
 				length = prepare_data_to_be_sent_to_net(NetTempBuffer, local_end, MAX_PAYLOAD_TO_NET);
-				if (write(listenfd, NetTempBuffer, length) < 0) {
+				if (write(sockfd, NetTempBuffer, length) < 0) {
 		            printf(" to Net, send fail \n");
 		        }else{
 					portENTER_CRITICAL();
@@ -523,8 +522,8 @@ void tcp_ip_process(void *pvParameters)		// Server    Server    Server
 	int length;
 	struct sockaddr_in client_addr;  	// charles222 added /* client's address */
     int addr_len = sizeof(struct sockaddr_in); 	// charles222 added
-    uint8 bindFailFlag = 1;
-	int listenfd;
+    uint8 failFlag = 1;
+	int sockfd;
 	struct sockaddr_in server_addr; 	/* address of Server, remote or itself */
 	my_event_t uart_event;
 	portBASE_TYPE xHigherPriorityTaskWoken = pdFALSE;  // charles222
@@ -547,28 +546,28 @@ void tcp_ip_process(void *pvParameters)		// Server    Server    Server
 		if(timer_count_for_socket_retry >= SOCKET_RETRY_THRESHOLD){	// if transparent mode
 			timer_count_for_socket_retry = 0;
 			// if socket failed, below socket process will be retried per TIME_UP_FOR_SOCKET_S
-			if(bindFailFlag == 1){	//do{
-				if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) < 0){	// *** SOCK_STREAM
+			if(failFlag == 1){	//do{
+				if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0){	// *** SOCK_STREAM
 					if(debug_level_release) printf(" \n  TCP Server socket Error \n");
 				}else{
-					if(debug_level_release) printf("\n  TCP Server socket() OK. listenfd is %d \n", listenfd);		
+					if(debug_level_release) printf("\n  TCP Server socket() OK. sockfd is %d \n", sockfd);		
 							// will fd increase in the while loop ?  so need to close it when fail.
-					if(bind(listenfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0){
+					if(bind(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0){
 						if(debug_level_release) printf("\n  bind Error, will retry later...  \n");
-						close(listenfd);
-						bindFailFlag = 1;
+						close(sockfd);
+						failFlag = 1;
 						//sleep(10);	// second
 						//continue;
 					}else{
 						if(debug_level_release) printf("\n  bind IP OK: %s  port: %d \n", inet_ntoa(server_addr.sin_addr), htons(server_addr.sin_port)); //argv[1], argv[2]);	
-						if(listen(listenfd, MAX_PENDING_CONNECTIONS) < 0){
+						if(listen(sockfd, MAX_PENDING_CONNECTIONS) < 0){
 							if(debug_level_release) printf("\n  listen Error, will retry... \n");
-							close(listenfd);
-							bindFailFlag = 1;
+							close(sockfd);
+							failFlag = 1;
 						}else{
-							if(debug_level_release) printf("\n  listenfd OK: Fd#:%d  \n", listenfd);
+							if(debug_level_release) printf("\n  sockfd OK: Fd#:%d  \n", sockfd);
 							
-							bindFailFlag = 0;	//*********** OK
+							failFlag = 0;	//*********** OK
 						}
 					}
 				}
@@ -576,7 +575,7 @@ void tcp_ip_process(void *pvParameters)		// Server    Server    Server
 			
 		}
 
-		if(bindFailFlag == 1){
+		if(failFlag == 1){
 			vTaskDelay(1000 /*MY_DELAY_MS*/ / portTICK_RATE_MS);
 			continue;
 		}
@@ -603,10 +602,10 @@ void tcp_ip_process(void *pvParameters)		// Server    Server    Server
 			}
 	  	}
 		
-		FD_SET(listenfd, &readfds);
+		FD_SET(sockfd, &readfds);
 		//**************************************************************************************
 		
-		maxfd = findMaxFd(connectTable, MAX_ACTIVE_CONNECTIONS, listenfd, 0);
+		maxfd = findMaxFd(connectTable, MAX_ACTIVE_CONNECTIONS, sockfd, 0);
 		
 		//***************************************************************************
 		/* set timeout if there is a pdu to send before our automatic timeout occurs */
@@ -659,13 +658,13 @@ void tcp_ip_process(void *pvParameters)		// Server    Server    Server
 		
 		// *** case C: TCP client connect to this Server
 		// case C is put at last (after case A and B)to avoid read block in case B? (really ?) because we call insertFd(...) below
-		if(FD_ISSET(listenfd, &readfds)){	
+		if(FD_ISSET(sockfd, &readfds)){	
 		
 			if((position = findFirstAvailablePosition(connectTable, MAX_ACTIVE_CONNECTIONS)) == -1){
 				//if(debug_level_release) printf("\n  No more cnnection is allowed. Get longest idle one to use \n" );
 				
 				#if 0
-				if((connfd = accept(listenfd,(struct sockaddr*)&client_addr, (socklen_t*)&addr_len)) < 0){
+				if((connfd = accept(sockfd,(struct sockaddr*)&client_addr, (socklen_t*)&addr_len)) < 0){
 					if(debug_level_release) printf("\n  Error at Socket's accept \n");
 					continue;
 				}
@@ -680,7 +679,7 @@ void tcp_ip_process(void *pvParameters)		// Server    Server    Server
 				if(debug_level_release) printf("\n  No more cnnection is allowed. Get longest idle one to use at position:%d \n", position );
 			}
 			
-			if((connfd = accept(listenfd,(struct sockaddr*)&client_addr, (socklen_t*)&addr_len)) < 0){
+			if((connfd = accept(sockfd,(struct sockaddr*)&client_addr, (socklen_t*)&addr_len)) < 0){
 				if(debug_level_release) printf("\n  Error at Socket's accept \n");
 				continue;
 			}
@@ -714,7 +713,7 @@ void tcp_ip_process(void *pvParameters)		// Server    Server    Server
 		// *** case E: write to fd to send to NET
 		anyConnectionIsMade = 0;
 		
-		if(bindFailFlag == 1){
+		if(failFlag == 1){
 			clear_u2n_buffer();
 		}else{
 			for(fd = 0; fd < MAX_ACTIVE_CONNECTIONS; fd++){
@@ -760,7 +759,7 @@ void tcp_server_write_to_net(void)
 	length = prepare_data_to_be_sent_to_net(NetTempBuffer, local_end, MAX_PAYLOAD_TO_NET);
 	if(debug_level_1) printf("\n prepare bytes to Net: %d  ", length);
 
-	if(0 /*bindFailFlag != 0*/){		// will not happen because caller has checked the Flag is 0
+	if(0 /*failFlag != 0*/){		// will not happen because caller has checked the Flag is 0
 		if(debug_level_release) printf(" \n *** Will send %d bytes to NULL because of socket failure. *** \n", length);
 		first_ret = length;	// dummy write to null
 	}else{
